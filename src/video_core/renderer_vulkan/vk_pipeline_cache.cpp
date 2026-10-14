@@ -348,10 +348,79 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
 
+        //if (infos[static_cast<u32>(SwStage::TessellationControl)]) {
+            LOG_WARNING(
+                Render_Vulkan,
+                "Pipeline diagnostic begin: pipeline={:#x} primitive={} "
+                "patch_control_points={} guest_tcs={}",
+                pipeline_hash,
+                static_cast<u32>(graphics_key.prim_type),
+                graphics_key.patch_control_points,
+                infos[static_cast<u32>(SwStage::TessellationControl)] != nullptr);
+
+            for (u32 stage = 0; stage < MaxShaderStages; ++stage) {
+                const auto* shader_info = infos[stage];
+                if (!shader_info) {
+                    continue;
+                }
+
+                bool matched = false;
+
+                for (const auto& [_, program] : program_cache) {
+                    for (size_t perm = 0; perm < program->modules.size(); ++perm) {
+                        if (program->modules[perm].module != modules[stage]) {
+                            continue;
+                        }
+
+                        LOG_WARNING(
+                            Render_Vulkan,
+                            "Tess pipeline stage: pipeline={:#x} sw_stage={} "
+                            "hw_stage={} pgm_hash={:#x} permutation={} "
+                            "stage_key={:#x} dump={}",
+                            pipeline_hash,
+                            stage,
+                            shader_info->hw_stage,
+                            program->info.pgm_hash,
+                            perm,
+                            graphics_key.stage_hashes[stage],
+                            GetShaderName(
+                                shader_info->hw_stage,
+                                program->info.pgm_hash,
+                                std::optional<size_t>{perm}));
+
+                        matched = true;
+                        break;
+                    }
+
+                    if (matched) {
+                        break;
+                    }
+                }
+
+                if (!matched) {
+                    LOG_WARNING(
+                        Render_Vulkan,
+                        "Tess pipeline stage: pipeline={:#x} sw_stage={} "
+                        "hw_stage={} pgm_hash={:#x} stage_key={:#x} "
+                        "module not found in program cache",
+                        pipeline_hash,
+                        stage,
+                        shader_info->hw_stage,
+                        shader_info->pgm_hash,
+                        graphics_key.stage_hashes[stage]);
+                }
+            }
+        //}
+
         GraphicsPipeline::SerializationSupport sdata{};
         it.value() = std::make_unique<GraphicsPipeline>(
             instance, scheduler, desc_heap, profile, graphics_key, *pipeline_cache, infos,
             runtime_infos, fetch_shader, modules, sdata, false);
+
+        //if (infos[static_cast<u32>(SwStage::TessellationControl)]) {
+            LOG_WARNING(Render_Vulkan,
+                        "Tess pipeline end: pipeline={:#x}", pipeline_hash);
+        //}
 
         RegisterPipelineData(graphics_key, pipeline_hash, sdata);
         ++num_new_pipelines;
