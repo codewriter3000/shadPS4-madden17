@@ -851,6 +851,10 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         }
     };
 
+    // TEMPORARY DIAGNOSTIC:
+    // Retire previous presenter submissions before reusing an acquire semaphore.
+    present_scheduler.Finish();
+
     // Recreate the swapchain if the window was resized.
     if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight()) {
         swapchain.Recreate(window.GetWidth(), window.GetHeight());

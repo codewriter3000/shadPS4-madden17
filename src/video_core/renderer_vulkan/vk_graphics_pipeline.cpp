@@ -195,98 +195,50 @@ GraphicsPipeline::GraphicsPipeline(
             .pName = "main",
         });
     } else if (is_rect_list || is_quad_list) {
-        const auto type = is_quad_list ? AuxShaderType::QuadListTCS : AuxShaderType::RectListTCS;
-        if (!preloading) {
-            const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
+        const auto type =
+            is_quad_list ? AuxShaderType::QuadListTCS
+                        : AuxShaderType::RectListTCS;
 
-            const auto diagnostic_hash = std::hash<GraphicsPipelineKey>{}(key);
-            const auto* vertex_info = infos[u32(Shader::SwStage::Vertex)];
+        if (!preloading) {
+            const auto& fs_info =
+                runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
+
+            auto aux_fs_info = fs_info;
+            const bool has_guest_fragment =
+                infos[u32(Shader::SwStage::Fragment)] != nullptr;
+
+            if (!has_guest_fragment && !fs_info.clip_distance_emulation) {
+                aux_fs_info.num_inputs = 0;
+
+                LOG_WARNING(
+                    Render_Vulkan,
+                    "Aux position-only TCS: pipeline={:#x}",
+                    std::hash<GraphicsPipelineKey>{}(key));
+            }
 
             LOG_WARNING(
                 Render_Vulkan,
-                "Aux interface: pipeline={:#x} clip_emulation={} "
-                "num_inputs={} ordinary_inputs={}",
-                diagnostic_hash,
+                "Aux TCS generation: pipeline={:#x} preloading={} "
+                "guest_fs={} clip={} original_inputs={} generated_inputs={}",
+                std::hash<GraphicsPipelineKey>{}(key),
+                preloading,
+                has_guest_fragment,
                 fs_info.clip_distance_emulation,
                 fs_info.num_inputs,
-                fs_info.num_inputs - (fs_info.clip_distance_emulation ? 1 : 0));
-
-            LOG_WARNING(
-                Render_Vulkan,
-                "Aux TCS inputs: pipeline={:#x} vertex_hash={:#x} "
-                "num_fragment_inputs={} clip_emulation={}",
-                diagnostic_hash,
-                vertex_info ? vertex_info->pgm_hash : 0,
-                fs_info.num_inputs,
-                fs_info.clip_distance_emulation);
-            
-            const auto* fragment_info = infos[u32(Shader::SwStage::Fragment)];
-
-            for (u32 i = 0; i < fs_info.num_inputs; ++i) {
-                const auto& input = fs_info.inputs[i];
-
-                LOG_WARNING(
-                    Render_Vulkan,
-                    "Aux TCS input: pipeline={:#x} input={} param_index={} "
-                    "is_default={} is_flat={} default_value={}",
-                    diagnostic_hash,
-                    i,
-                    input.param_index,
-                    input.IsDefault(),
-                    input.is_flat,
-                    input.default_value);
-
-                const auto param = Shader::IR::Attribute::Param0 + i;
-
-                LOG_WARNING(
-                    Render_Vulkan,
-                    "Aux FS usage: pipeline={:#x} input={} param_index={} "
-                    "fs_present={} loaded={} components={}",
-                    diagnostic_hash,
-                    i,
-                    input.param_index,
-                    fragment_info != nullptr,
-                    fragment_info ? fragment_info->loads.GetAny(param) : false,
-                    fragment_info ? fragment_info->loads.NumComponents(param) : 0u);
-            }
-
-            auto aux_fs_info = fs_info;
-
-            const bool has_guest_fragment =
-                infos[u32(Shader::SwStage::Fragment)] != nullptr;
-
-            if (!has_guest_fragment && !fs_info.clip_distance_emulation) {
-                aux_fs_info.num_inputs = 0;
-
-                LOG_WARNING(
-                    Render_Vulkan,
-                    "Aux position-only TCS: pipeline={:#x}",
-                    std::hash<GraphicsPipelineKey>{}(key));
-            }
-
-            auto aux_fs_info = fs_info;
-
-            const bool has_guest_fragment =
-                infos[u32(Shader::SwStage::Fragment)] != nullptr;
-
-            if (!has_guest_fragment && !fs_info.clip_distance_emulation) {
-                aux_fs_info.num_inputs = 0;
-
-                LOG_WARNING(
-                    Render_Vulkan,
-                    "Aux position-only TCS: pipeline={:#x}",
-                    std::hash<GraphicsPipelineKey>{}(key));
-            }
+                aux_fs_info.num_inputs);
 
             sdata.tcs =
-                Shader::Backend::SPIRV::EmitAuxilaryTessShader(type, aux_fs_info);
+                Shader::Backend::SPIRV::EmitAuxilaryTessShader(
+                    type, aux_fs_info);
         }
+
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationControl,
             .module = CompileSPV(sdata.tcs, instance.GetDevice()),
             .pName = "main",
         });
     }
+
     stage = u32(Shader::SwStage::TessellationEval);
     if (infos[stage]) {
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
@@ -296,9 +248,10 @@ GraphicsPipeline::GraphicsPipeline(
         });
     } else if (is_rect_list || is_quad_list) {
         if (!preloading) {
-            const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
-            auto aux_fs_info = fs_info;
+            const auto& fs_info =
+                runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
 
+            auto aux_fs_info = fs_info;
             const bool has_guest_fragment =
                 infos[u32(Shader::SwStage::Fragment)] != nullptr;
 
@@ -311,23 +264,22 @@ GraphicsPipeline::GraphicsPipeline(
                     std::hash<GraphicsPipelineKey>{}(key));
             }
 
-            auto aux_fs_info = fs_info;
+            LOG_WARNING(
+                Render_Vulkan,
+                "Aux TES generation: pipeline={:#x} preloading={} "
+                "guest_fs={} clip={} original_inputs={} generated_inputs={}",
+                std::hash<GraphicsPipelineKey>{}(key),
+                preloading,
+                has_guest_fragment,
+                fs_info.clip_distance_emulation,
+                fs_info.num_inputs,
+                aux_fs_info.num_inputs);
 
-            const bool has_guest_fragment =
-                infos[u32(Shader::SwStage::Fragment)] != nullptr;
-
-            if (!has_guest_fragment && !fs_info.clip_distance_emulation) {
-                aux_fs_info.num_inputs = 0;
-
-                LOG_WARNING(
-                    Render_Vulkan,
-                    "Aux position-only TES: pipeline={:#x}",
-                    std::hash<GraphicsPipelineKey>{}(key));
-            }
-
-            sdata.tes = Shader::Backend::SPIRV::EmitAuxilaryTessShader(
-                AuxShaderType::PassthroughTES, aux_fs_info);
+            sdata.tes =
+                Shader::Backend::SPIRV::EmitAuxilaryTessShader(
+                    AuxShaderType::PassthroughTES, aux_fs_info);
         }
+
         shader_stages.emplace_back(vk::PipelineShaderStageCreateInfo{
             .stage = vk::ShaderStageFlagBits::eTessellationEvaluation,
             .module = CompileSPV(sdata.tes, instance.GetDevice()),

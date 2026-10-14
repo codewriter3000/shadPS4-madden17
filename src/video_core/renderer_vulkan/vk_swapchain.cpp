@@ -77,6 +77,9 @@ void Swapchain::Create(u32 width_, u32 height_) {
 
     SetupImages();
     RefreshSemaphores();
+
+    frame_index = 0;
+    image_index = 0;
 }
 
 void Swapchain::Recreate(u32 width_, u32 height_) {

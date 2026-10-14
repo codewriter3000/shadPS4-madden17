@@ -343,6 +343,11 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
         const u32 actual_dst_w = std::max(dst_ci.extent.width >> mip, 1u);
         const u32 actual_dst_h = std::max(dst_ci.extent.height >> mip, 1u);
 
+        const u32 dst_blocks_w =
+            actual_dst_w / 4u + (actual_dst_w % 4u != 0u);
+        const u32 dst_blocks_h =
+            actual_dst_h / 4u + (actual_dst_h % 4u != 0u);
+
         const bool use_bc3_tail_fallback =
             src_ci.format == vk::Format::eR32G32B32A32Uint &&
             dst_ci.format == vk::Format::eBc3UnormBlock &&
@@ -354,13 +359,17 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
             dst_ci.arrayLayers == 1 &&
             region.srcSubresource.layerCount == 1 &&
             region.dstSubresource.layerCount == 1 &&
-            actual_src_w == 1 &&
-            actual_src_h == 1 &&
-            actual_dst_w == 2 &&
-            actual_dst_h == 4;
+            src_aspect == vk::ImageAspectFlagBits::eColor &&
+            dst_aspect == vk::ImageAspectFlagBits::eColor &&
+            actual_src_w == dst_blocks_w &&
+            actual_src_h == dst_blocks_h &&
+            (actual_dst_w % 4u != 0u ||
+             actual_dst_h % 4u != 0u);
 
         if (use_bc3_tail_fallback) {
-            constexpr u64 copy_bytes = 16;
+            const u64 copy_bytes =
+                static_cast<u64>(actual_src_w) *
+                static_cast<u64>(actual_src_h) * 16u;
             constexpr u64 copy_alignment = 16;
 
             // Deferred forces the dedicated-buffer path for this diagnostic test.
@@ -373,9 +382,10 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
             LOG_WARNING(
                 Render_Vulkan,
                 "CopyImage BC3 tail fallback: src_addr={:#x} dst_addr={:#x} "
-                "mip={} src=1x1 dst=2x4 bytes={}",
+                "mip={} src={}x{} dst={}x{} bytes={}",
                 src->info.guest_address, dst->info.guest_address,
-                mip, copy_bytes);
+                mip, actual_src_w, actual_src_h,
+                actual_dst_w, actual_dst_h, copy_bytes);
 
             const vk::BufferImageCopy src_copy{
                 .bufferOffset = staging.offset,
@@ -388,7 +398,7 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
                     .layerCount = 1,
                 },
                 .imageOffset = {0, 0, 0},
-                .imageExtent = {1, 1, 1},
+                .imageExtent = {actual_src_w, actual_src_h, 1},
             };
 
             const vk::BufferImageCopy dst_copy{
@@ -402,7 +412,7 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
                     .layerCount = 1,
                 },
                 .imageOffset = {0, 0, 0},
-                .imageExtent = {2, 4, 1},
+                .imageExtent = {actual_dst_w, actual_dst_h, 1},
             };
 
             scheduler.EndRendering();
