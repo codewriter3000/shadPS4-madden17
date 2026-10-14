@@ -260,9 +260,42 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
     const bool is_same_type = !is_2d_to_3d && !is_3d_to_2d;
 
     for (u32 mip = 0; mip < num_mips; ++mip) {
-        const u32 mip_w = std::max(base_width >> mip, 1u);
-        const u32 mip_h = std::max(base_height >> mip, 1u);
+        u32 mip_w = std::max(base_width >> mip, 1u);
+        u32 mip_h = std::max(base_height >> mip, 1u);
         const u32 mip_d = std::max(base_depth >> mip, 1u);
+
+        const u32 dst_mip_w = std::max(dst->info.size.width >> mip, 1u);
+        const u32 dst_mip_h = std::max(dst->info.size.height >> mip, 1u);
+
+        LOG_WARNING(
+            Render_Vulkan,
+            "CopyImage mip={} src_base={}x{} dst_base={}x{} "
+            "src_mip={}x{} dst_mip={}x{} src_fmt={} dst_fmt={}",
+            mip,
+            src->info.size.width, src->info.size.height,
+            dst->info.size.width, dst->info.size.height,
+            mip_w, mip_h,
+            dst_mip_w, dst_mip_h,
+            vk::to_string(src->info.pixel_format),
+            vk::to_string(dst->info.pixel_format));
+
+        if (src_is_2d && dst_is_2d &&
+            src->info.pixel_format == dst->info.pixel_format) {
+            const u32 copy_w = std::min(mip_w, dst_mip_w);
+            const u32 copy_h = std::min(mip_h, dst_mip_h);
+
+            if (copy_w != mip_w || copy_h != mip_h) {
+                LOG_WARNING(
+                    Render_Vulkan,
+                    "CopyImage diagnostic extent reduction: mip={} "
+                    "src={}x{} dst={}x{} copy={}x{} format={}",
+                    mip, mip_w, mip_h, dst_mip_w, dst_mip_h,
+                    copy_w, copy_h, vk::to_string(src->info.pixel_format));
+            }
+
+            mip_w = copy_w;
+            mip_h = copy_h;
+        }
 
         const auto [src_layers, dst_layers] = SanitizeCopyLayers(src->info, dst->info, mip_d);
 
@@ -300,6 +333,136 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
             region.extent = vk::Extent3D(mip_w, mip_h, dst_layers);
         }
 
+                // Fallback for R32G32B32A32Uint
+
+        const auto& src_ci = src->backing->image.image_ci;
+        const auto& dst_ci = dst->backing->image.image_ci;
+
+        const u32 actual_src_w = std::max(src_ci.extent.width >> mip, 1u);
+        const u32 actual_src_h = std::max(src_ci.extent.height >> mip, 1u);
+        const u32 actual_dst_w = std::max(dst_ci.extent.width >> mip, 1u);
+        const u32 actual_dst_h = std::max(dst_ci.extent.height >> mip, 1u);
+
+        const bool use_bc3_tail_fallback =
+            src_ci.format == vk::Format::eR32G32B32A32Uint &&
+            dst_ci.format == vk::Format::eBc3UnormBlock &&
+            src_ci.imageType == vk::ImageType::e2D &&
+            dst_ci.imageType == vk::ImageType::e2D &&
+            src_ci.samples == vk::SampleCountFlagBits::e1 &&
+            dst_ci.samples == vk::SampleCountFlagBits::e1 &&
+            src_ci.arrayLayers == 1 &&
+            dst_ci.arrayLayers == 1 &&
+            region.srcSubresource.layerCount == 1 &&
+            region.dstSubresource.layerCount == 1 &&
+            actual_src_w == 1 &&
+            actual_src_h == 1 &&
+            actual_dst_w == 2 &&
+            actual_dst_h == 4;
+
+        if (use_bc3_tail_fallback) {
+            constexpr u64 copy_bytes = 16;
+            constexpr u64 copy_alignment = 16;
+
+            // Deferred forces the dedicated-buffer path for this diagnostic test.
+            const auto staging = staging_pool.Request(
+                copy_bytes, VideoCore::MemoryType::DeviceLocal,
+                copy_alignment, true, false);
+
+            ASSERT(staging.offset % copy_alignment == 0);
+
+            LOG_WARNING(
+                Render_Vulkan,
+                "CopyImage BC3 tail fallback: src_addr={:#x} dst_addr={:#x} "
+                "mip={} src=1x1 dst=2x4 bytes={}",
+                src->info.guest_address, dst->info.guest_address,
+                mip, copy_bytes);
+
+            const vk::BufferImageCopy src_copy{
+                .bufferOffset = staging.offset,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageSubresource{
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .mipLevel = mip,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .imageOffset = {0, 0, 0},
+                .imageExtent = {1, 1, 1},
+            };
+
+            const vk::BufferImageCopy dst_copy{
+                .bufferOffset = staging.offset,
+                .bufferRowLength = 0,
+                .bufferImageHeight = 0,
+                .imageSubresource{
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .mipLevel = mip,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+                .imageOffset = {0, 0, 0},
+                .imageExtent = {2, 4, 1},
+            };
+
+            scheduler.EndRendering();
+
+            bool fallback_needs_flush =
+                Transit(src, vk::ImageLayout::eTransferSrcOptimal,
+                        vk::PipelineStageFlagBits2::eCopy,
+                        vk::AccessFlagBits2::eTransferRead);
+
+            fallback_needs_flush |=
+                Transit(dst, vk::ImageLayout::eTransferDstOptimal,
+                        vk::PipelineStageFlagBits2::eCopy,
+                        vk::AccessFlagBits2::eTransferWrite);
+
+            fallback_needs_flush |=
+                IsBufferAccessed(staging.buffer, staging.offset,
+                                copy_bytes, true);
+
+            if (fallback_needs_flush) {
+                FlushBarriers();
+            }
+
+            const auto fallback_cmdbuf = scheduler.CommandBuffer();
+
+            fallback_cmdbuf.copyImageToBuffer(
+                src->GetImage(),
+                vk::ImageLayout::eTransferSrcOptimal,
+                staging.buffer->Handle(),
+                src_copy);
+
+            const vk::MemoryBarrier2 staging_barrier{
+                .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+                .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+                .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+            };
+
+            fallback_cmdbuf.pipelineBarrier2(vk::DependencyInfo{
+                .memoryBarrierCount = 1u,
+                .pMemoryBarriers = &staging_barrier,
+            });
+
+            fallback_cmdbuf.copyBufferToImage(
+                staging.buffer->Handle(),
+                dst->GetImage(),
+                vk::ImageLayout::eTransferDstOptimal,
+                dst_copy);
+
+            AccessBuffer(
+                staging.buffer, staging.offset, copy_bytes,
+                vk::PipelineStageFlagBits2::eCopy,
+                vk::AccessFlagBits2::eTransferWrite |
+                    vk::AccessFlagBits2::eTransferRead);
+
+            staging_pool.FreeDeferred(staging);
+
+            // Do not also submit this mip through the invalid direct copy.
+            continue;
+        }
+
         regions.push_back(region);
     }
 
@@ -314,9 +477,16 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
         FlushBarriers();
     }
 
-    auto cmdbuf = scheduler.CommandBuffer();
-    cmdbuf.copyImage(src->GetImage(), vk::ImageLayout::eTransferSrcOptimal, dst->GetImage(),
-                     vk::ImageLayout::eTransferDstOptimal, regions);
+    // Added guard for copy if region is handled by fallback
+    if (!regions.empty()) {
+        const auto cmdbuf = scheduler.CommandBuffer();
+        cmdbuf.copyImage(
+            src->GetImage(),
+            vk::ImageLayout::eTransferSrcOptimal,
+            dst->GetImage(),
+            vk::ImageLayout::eTransferDstOptimal,
+            regions);
+    }
 
     dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
     dst->flags &= ~VideoCore::ImageFlagBits::Dirty;

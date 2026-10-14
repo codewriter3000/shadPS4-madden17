@@ -332,12 +332,16 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
 
         // Compressed view of uncompressed image with same block size.
         if (image_info.props.is_block && !cache_image.info.props.is_block) {
+            LOG_WARNING(Render_Vulkan,
+                "ResolveOverlap: ExpandImage reason=compressed-reinterpret");
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
         if (image_info.guest_size == cache_image.info.guest_size &&
             (image_info.type == AmdGpu::ImageType::Color3D ||
              cache_image.info.type == AmdGpu::ImageType::Color3D)) {
+            LOG_WARNING(Render_Vulkan,
+                "ResolveOverlap: ExpandImage reason=equal-size-3d-reinterpret");
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
@@ -362,6 +366,19 @@ std::tuple<ImageId, int, int> TextureCache::ResolveOverlap(const ImageInfo& imag
         // Size and resources are greater, expand the image.
         if (image_info.type == cache_image.info.type &&
             image_info.resources > cache_image.info.resources) {
+            LOG_WARNING(
+                Render_Vulkan,
+                "ResolveOverlap resource-growth: same_size={} same_pitch={} "
+                "same_format={} same_tile={} old_levels={} new_levels={} "
+                "old_layers={} new_layers={}",
+                cache_image.info.size == image_info.size,
+                cache_image.info.pitch == image_info.pitch,
+                cache_image.info.pixel_format == image_info.pixel_format,
+                cache_image.info.tile_mode == image_info.tile_mode,
+                cache_image.info.resources.levels,
+                image_info.resources.levels,
+                cache_image.info.resources.layers,
+                image_info.resources.layers);
             return {ExpandImage(image_info, cache_image_id), -1, -1};
         }
 
@@ -543,6 +560,26 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
     auto& new_image = slot_images[new_image_id];
 
     RefreshImage(new_image);
+
+    LOG_WARNING(
+        Render_Vulkan,
+        "ExpandImage: old addr={:#x} size={}x{}x{} levels={} layers={} format={} "
+        "new addr={:#x} size={}x{}x{} levels={} layers={} format={}",
+        src_image.info.guest_address,
+        src_image.info.size.width,
+        src_image.info.size.height,
+        src_image.info.size.depth,
+        src_image.info.resources.levels,
+        src_image.info.resources.layers,
+        vk::to_string(src_image.info.pixel_format),
+        new_image.info.guest_address,
+        new_image.info.size.width,
+        new_image.info.size.height,
+        new_image.info.size.depth,
+        new_image.info.resources.levels,
+        new_image.info.resources.layers,
+        vk::to_string(new_image.info.pixel_format));
+
     runtime.CopyImage(&src_image, &new_image);
 
     if (src_image.binding.is_bound || src_image.binding.is_target) {
