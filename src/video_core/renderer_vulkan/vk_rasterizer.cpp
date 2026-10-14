@@ -197,7 +197,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     }
 
     // Set to false to restore normal drawing without removing the diagnostic.
-    constexpr bool enable_candidate_suppression = true;
+    constexpr bool enable_candidate_suppression = false;
     constexpr u64 candidate_vertex_shader = 0x25eba668ULL;
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
@@ -278,7 +278,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset,
     }
 
     // Keep this setting consistent with Rasterizer::Draw().
-    constexpr bool enable_candidate_suppression = true;
+    constexpr bool enable_candidate_suppression = false;
     constexpr u64 candidate_vertex_shader = 0x25eba668ULL;
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);

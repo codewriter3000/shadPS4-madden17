@@ -217,6 +217,22 @@ void WindowSDL::WaitEvent() {
         return;
     }
 
+    // TEMPORARY DIAGNOSTIC: request a RenderDoc GPU frame capture.
+    if (event.type == SDL_EVENT_KEY_DOWN &&
+        !event.key.repeat &&
+        event.key.scancode == SDL_SCANCODE_P &&
+        (event.key.mod & SDL_KMOD_CTRL) != 0 &&
+        (event.key.mod & SDL_KMOD_SHIFT) != 0) {
+        if (VideoCore::IsRenderDocLoaded()) {
+            VideoCore::TriggerCapture();
+            LOG_INFO(Frontend, "Requested RenderDoc frame capture");
+        } else {
+            LOG_WARNING(Frontend,
+                        "RenderDoc is not loaded; frame capture was not requested");
+        }
+        return;
+    }
+
     switch (event.type) {
     case SDL_EVENT_WINDOW_RESIZED:
     case SDL_EVENT_WINDOW_MAXIMIZED:
