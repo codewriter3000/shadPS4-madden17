@@ -196,10 +196,20 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
         return;
     }
 
+    // Set to false to restore normal drawing without removing the diagnostic.
+    constexpr bool enable_candidate_suppression = true;
+    constexpr u64 candidate_vertex_shader = 0x25eba668ULL;
+
+    const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
+    const bool suppress_candidate_draw =
+        enable_candidate_suppression &&
+        vs_info.pgm_hash == candidate_vertex_shader;
+
     PrepareRenderState(pipeline);
     if (!BindResources(pipeline)) {
         return;
     }
+
     const auto state = BeginRendering(pipeline);
 
     BindVertexBuffers(pipeline);
@@ -215,28 +225,38 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset) {
     UpdateDynamicState(pipeline, is_indexed);
     scheduler.BeginRendering(state);
 
-    const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
-    const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
+    const auto [vertex_offset, instance_offset] =
+        GetDrawOffsets(regs, vs_info, fetch_shader);
 
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
 
-    if (is_indexed) {
-        cmdbuf.drawIndexed(regs.num_indices, regs.num_instances.NumInstances(), 0,
-                           s32(vertex_offset), instance_offset);
-    } else {
-        cmdbuf.draw(regs.num_indices, regs.num_instances.NumInstances(), vertex_offset,
-                    instance_offset);
+    if (!suppress_candidate_draw) {
+        if (is_indexed) {
+            cmdbuf.drawIndexed(
+                regs.num_indices,
+                regs.num_instances.NumInstances(),
+                0,
+                s32(vertex_offset),
+                instance_offset);
+        } else {
+            cmdbuf.draw(
+                regs.num_indices,
+                regs.num_instances.NumInstances(),
+                vertex_offset,
+                instance_offset);
+        }
+
+        DebugState.IncDrawCall();
     }
-    DebugState.IncDrawCall();
 
     ResetBindings(false);
 }
 
-void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u32 stride,
-                              u32 max_count, VAddr count_address, u16 vertex_sgpr_offset,
-                              u16 instance_sgpr_offset) {
+void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset,
+                              u32 stride, u32 max_count, VAddr count_address,
+                              u16 vertex_sgpr_offset, u16 instance_sgpr_offset) {
     RENDERER_TRACE;
 
     scheduler.PopPendingOperations();
@@ -250,15 +270,27 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
         .instance_sgpr_offset = instance_sgpr_offset,
         .is_indirect = true,
     };
-    const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline(params);
+
+    const GraphicsPipeline* pipeline =
+        pipeline_cache.GetGraphicsPipeline(params);
     if (!pipeline) {
         return;
     }
+
+    // Keep this setting consistent with Rasterizer::Draw().
+    constexpr bool enable_candidate_suppression = true;
+    constexpr u64 candidate_vertex_shader = 0x25eba668ULL;
+
+    const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
+    const bool suppress_candidate_draw =
+        enable_candidate_suppression &&
+        vs_info.pgm_hash == candidate_vertex_shader;
 
     PrepareRenderState(pipeline);
     if (!BindResources(pipeline)) {
         return;
     }
+
     const auto state = BeginRendering(pipeline);
 
     BindVertexBuffers(pipeline);
@@ -267,17 +299,27 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     }
 
     const auto size = stride * max_count;
-    const auto [buffer, base] = buffer_cache.ObtainBuffer(arg_address + offset, size);
-    needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);
-    bound_buffers.emplace_back(buffer, base, size, vk::AccessFlagBits2::eIndirectCommandRead);
+    const auto [buffer, base] =
+        buffer_cache.ObtainBuffer(arg_address + offset, size);
 
-    const VideoCore::Buffer* count_buffer;
-    u64 count_offset;
+    needs_barrier |= runtime.IsBufferAccessed(buffer, base, size);
+    bound_buffers.emplace_back(
+        buffer, base, size,
+        vk::AccessFlagBits2::eIndirectCommandRead);
+
+    const VideoCore::Buffer* count_buffer = nullptr;
+    u64 count_offset = 0;
+
     if (count_address != 0) {
-        std::tie(count_buffer, count_offset) = buffer_cache.ObtainBuffer(count_address, 4);
-        needs_barrier |= runtime.IsBufferAccessed(count_buffer, count_offset, 4);
-        bound_buffers.emplace_back(count_buffer, count_offset, 4,
-                                   vk::AccessFlagBits2::eIndirectCommandRead);
+        std::tie(count_buffer, count_offset) =
+            buffer_cache.ObtainBuffer(count_address, 4);
+
+        needs_barrier |= runtime.IsBufferAccessed(
+            count_buffer, count_offset, 4);
+
+        bound_buffers.emplace_back(
+            count_buffer, count_offset, 4,
+            vk::AccessFlagBits2::eIndirectCommandRead);
     }
 
     if (needs_barrier) {
@@ -291,25 +333,39 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     const auto cmdbuf = scheduler.CommandBuffer();
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline->Handle());
 
-    if (is_indexed) {
-        ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
+    if (!suppress_candidate_draw) {
+        if (is_indexed) {
+            ASSERT(sizeof(VkDrawIndexedIndirectCommand) == stride);
 
-        if (count_address != 0) {
-            cmdbuf.drawIndexedIndirectCount(buffer->Handle(), base, count_buffer->Handle(),
-                                            count_offset, max_count, stride);
+            if (count_address != 0) {
+                cmdbuf.drawIndexedIndirectCount(
+                    buffer->Handle(),
+                    base,
+                    count_buffer->Handle(),
+                    count_offset,
+                    max_count,
+                    stride);
+            } else {
+                cmdbuf.drawIndexedIndirect(
+                    buffer->Handle(), base, max_count, stride);
+            }
         } else {
-            cmdbuf.drawIndexedIndirect(buffer->Handle(), base, max_count, stride);
-        }
-        DebugState.IncDrawCall();
-    } else {
-        ASSERT(sizeof(VkDrawIndirectCommand) == stride);
+            ASSERT(sizeof(VkDrawIndirectCommand) == stride);
 
-        if (count_address != 0) {
-            cmdbuf.drawIndirectCount(buffer->Handle(), base, count_buffer->Handle(), count_offset,
-                                     max_count, stride);
-        } else {
-            cmdbuf.drawIndirect(buffer->Handle(), base, max_count, stride);
+            if (count_address != 0) {
+                cmdbuf.drawIndirectCount(
+                    buffer->Handle(),
+                    base,
+                    count_buffer->Handle(),
+                    count_offset,
+                    max_count,
+                    stride);
+            } else {
+                cmdbuf.drawIndirect(
+                    buffer->Handle(), base, max_count, stride);
+            }
         }
+
         DebugState.IncDrawCall();
     }
 
